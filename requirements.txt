@@ -1,0 +1,11 @@
+streamlit
+pandas
+folium
+streamlit-folium
+supabase
+plotly
+geopy
+branca
+python-dotenv
+numpy
+requests
