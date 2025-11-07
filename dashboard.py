@@ -1,196 +1,209 @@
 import streamlit as st
 import pandas as pd
-import folium
-from streamlit_folium import st_folium
 from supabase import create_client, Client
-from datetime import datetime
+import plotly.express as px
 from geopy.geocoders import Nominatim
-import io
 
-# --------------------------
-# Supabase Setup
-# --------------------------
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# --- Page setup ---
+st.set_page_config(page_title="Terrascope Dashboard", layout="wide")
 
-# --------------------------
-# Page Setup
-# --------------------------
-st.set_page_config(page_title="TerraScope - Land Health Monitor", layout="wide")
-st.title("🌍 TerraScope - Land Health Monitoring Dashboard")
+# --- Connect to Supabase ---
+supabase_url = st.secrets["SUPABASE_URL"]
+supabase_key = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(supabase_url, supabase_key)
 
-# --------------------------
-# Helper Functions
-# --------------------------
-def classify_status(soil_moisture, vegetation_index):
-    if soil_moisture < 20 or vegetation_index < 0.3:
-        return "Degraded", "Reforestation or irrigation needed."
-    elif 20 <= soil_moisture < 35 or 0.3 <= vegetation_index < 0.5:
-        return "At Risk", "Mulching, cover crops, or moderate irrigation."
-    else:
-        return "Healthy", "Land is healthy. Maintain current practices."
+st.title("🌍 Terrascope Land Health Dashboard")
 
-def get_color(status):
-    return {"Healthy": "green", "At Risk": "orange", "Degraded": "red"}.get(status, "gray")
-
-def get_location_name(lat, lon):
+# --- Classification and suggestion logic ---
+def classify_status(row):
     try:
-        geolocator = Nominatim(user_agent="terrascope")
-        location = geolocator.reverse((lat, lon), timeout=10)
-        return location.address if location else "Unknown Location"
+        if row["soil_moisture"] >= 35 and row["vegetation_index"] >= 0.6:
+            return "Healthy"
+        elif 20 <= row["soil_moisture"] < 35 or 0.4 <= row["vegetation_index"] < 0.6:
+            return "At Risk"
+        elif row["soil_moisture"] < 20 or row["vegetation_index"] < 0.4:
+            return "Degraded"
+        else:
+            return "Critical"
     except Exception:
-        return "Unknown Location"
+        return "Unknown"
 
-# --------------------------
-# Fetch Data
-# --------------------------
-try:
+def generate_suggestion(status):
+    suggestions = {
+        "Healthy": "Land is healthy. Maintain current practices.",
+        "At Risk": "Monitor soil conditions. Mild intervention may help.",
+        "Degraded": "Reforestation or irrigation is recommended.",
+        "Critical": "Immediate restoration needed — consider intensive soil recovery.",
+        "Unknown": "No suggestion available.",
+    }
+    return suggestions.get(status, "No suggestion available.")
+
+# --- Load data from Supabase ---
+@st.cache_data
+def load_data():
     response = supabase.table("land_data").select("*").execute()
-    df = pd.DataFrame(response.data)
-except Exception as e:
-    st.error(f"Failed to fetch data: {e}")
-    df = pd.DataFrame()
+    return pd.DataFrame(response.data)
 
-# --------------------------
-# Clean and Process Data
-# --------------------------
+df = load_data()
+
+# --- Clean data and auto-classify missing records ---
 if not df.empty:
-    df.drop_duplicates(subset=["latitude", "longitude", "soil_moisture", "vegetation_index"], inplace=True)
-    df["status"], df["suggestion"] = zip(*df.apply(
-        lambda row: classify_status(row["soil_moisture"], row["vegetation_index"]), axis=1
-    ))
+    df.columns = df.columns.str.lower()
+    for col in ["soil_moisture", "vegetation_index", "temperature"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-# --------------------------
-# Sidebar - Filter and Add Data
-# --------------------------
-st.sidebar.header("Filter & Add Data")
+    if "status" not in df.columns:
+        df["status"] = None
+    if "suggestion" not in df.columns:
+        df["suggestion"] = None
 
-status_filter = st.sidebar.selectbox("Filter by Status", ["All", "Healthy", "At Risk", "Degraded"])
+    df["status"] = df.apply(lambda x: classify_status(x) if pd.isna(x["status"]) or x["status"] == "Unknown" else x["status"], axis=1)
+    df["suggestion"] = df.apply(lambda x: generate_suggestion(x["status"]) if pd.isna(x["suggestion"]) else x["suggestion"], axis=1)
 
-with st.sidebar.form("add_data_form", clear_on_submit=True):
-    st.write("Add New Land Data")
-    soil_moisture = st.number_input("Soil Moisture (%)", min_value=0.0, max_value=100.0, step=0.1)
-    vegetation_index = st.number_input("Vegetation Index (0–1)", min_value=0.0, max_value=1.0, step=0.01)
-    temperature = st.number_input("Temperature (°C)", min_value=-10.0, max_value=60.0, step=0.1)
-    latitude = st.number_input("Latitude", format="%.6f")
-    longitude = st.number_input("Longitude", format="%.6f")
+# --- Sidebar: Filter & Upload ---
+st.sidebar.header("Filter, Upload & Input Data")
 
-    if latitude != 0 and longitude != 0:
-        detected_location = get_location_name(latitude, longitude)
-        st.info(f"Detected Location: {detected_location}")
-    else:
-        detected_location = "Unknown Location"
+status_filter = st.sidebar.selectbox(
+    "Filter by Land Status",
+    ["All", "Healthy", "At Risk", "Degraded", "Critical"],
+)
 
-    submit = st.form_submit_button("Submit Data")
+if status_filter != "All":
+    df = df[df["status"] == status_filter]
 
-    if submit:
-        status, suggestion = classify_status(soil_moisture, vegetation_index)
-        record = {
-            "location": detected_location,
-            "soil_moisture": soil_moisture,
-            "vegetation_index": vegetation_index,
-            "temperature": temperature,
-            "latitude": latitude,
-            "longitude": longitude,
-            "timestamp": datetime.utcnow().isoformat(),
-            "status": status,
-            "suggestion": suggestion,
-        }
-        try:
-            supabase.table("land_data").insert(record).execute()
-            st.success(f"✅ Data added for {detected_location} ({status})")
-        except Exception as e:
-            st.error(f"Error adding data: {e}")
+# --- Upload CSV Section ---
+st.sidebar.subheader("Upload New Land Data")
+uploaded_file = st.sidebar.file_uploader("Upload CSV file", type=["csv"])
 
-# --------------------------
-# Filter Data
-# --------------------------
-if not df.empty:
-    if status_filter != "All":
-        df = df[df["status"] == status_filter]
+if uploaded_file:
+    new_data = pd.read_csv(uploaded_file)
+    new_data.columns = new_data.columns.str.strip().str.lower()
 
-# --------------------------
-# Map Visualization
-# --------------------------
-if not df.empty:
-    m = folium.Map(location=[9.0820, 8.6753], zoom_start=5, tiles="OpenStreetMap")
+    st.sidebar.write("Preview:")
+    st.sidebar.dataframe(new_data.head())
 
-    for _, row in df.iterrows():
-        folium.CircleMarker(
-            location=[row["latitude"], row["longitude"]],
-            radius=9,
-            color=get_color(row["status"]),
-            fill=True,
-            fill_color=get_color(row["status"]),
-            fill_opacity=0.9,
-            popup=folium.Popup(
-                f"<b>Location:</b> {row['location']}<br>"
-                f"<b>Status:</b> {row['status']}<br>"
-                f"<b>Soil Moisture:</b> {row['soil_moisture']}%<br>"
-                f"<b>Vegetation Index:</b> {row['vegetation_index']}<br>"
-                f"<b>Temperature:</b> {row['temperature']}°C<br>"
-                f"<b>Suggestion:</b> {row['suggestion']}",
-                max_width=300,
-            ),
-        ).add_to(m)
+    required_cols = ["soil_moisture", "vegetation_index", "temperature", "latitude", "longitude"]
+    for col in required_cols:
+        if col not in new_data.columns:
+            st.sidebar.error(f"❌ Missing column: {col}")
+            st.stop()
 
-    legend_html = """
-    <div style="position: fixed; bottom: 30px; left: 30px; width: 160px;
-                background-color: white; border:2px solid grey; border-radius:8px;
-                padding: 10px; font-size:14px; z-index:9999;">
-        <b>Legend:</b><br>
-        <i style="background:green;width:12px;height:12px;border-radius:50%;display:inline-block;"></i> Healthy<br>
-        <i style="background:orange;width:12px;height:12px;border-radius:50%;display:inline-block;"></i> At Risk<br>
-        <i style="background:red;width:12px;height:12px;border-radius:50%;display:inline-block;"></i> Degraded
-    </div>
-    """
-    m.get_root().html.add_child(folium.Element(legend_html))
+    if "location" not in new_data.columns:
+        geolocator = Nominatim(user_agent="terrascope")
+        new_data["location"] = new_data.apply(
+            lambda x: geolocator.reverse((x["latitude"], x["longitude"]), language="en").address
+            if pd.notna(x["latitude"]) and pd.notna(x["longitude"]) else "Unknown",
+            axis=1,
+        )
 
-    st.subheader("🗺️ Land Health Map")
-    st_folium(m, width=900, height=500)
+    new_data["status"] = new_data.apply(classify_status, axis=1)
+    new_data["suggestion"] = new_data["status"].apply(generate_suggestion)
 
-    # --------------------------
-    # Data Table & Download
-    # --------------------------
-    st.subheader("📋 Land Data Table")
-    st.dataframe(df[["location", "latitude", "longitude", "soil_moisture",
-                     "vegetation_index", "temperature", "status", "suggestion", "timestamp"]])
-
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "📥 Download Data as CSV",
-        csv,
-        "terrascope_land_data.csv",
-        "text/csv",
-        key='download-csv'
-    )
-
-    # --------------------------
-    # File Upload Option
-    # --------------------------
-    st.subheader("📤 Upload Land Data CSV")
-    uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
-    if uploaded_file is not None:
-        new_data = pd.read_csv(uploaded_file)
+    if st.sidebar.button("Add CSV Data"):
         try:
             for _, row in new_data.iterrows():
-                status, suggestion = classify_status(row["soil_moisture"], row["vegetation_index"])
-                record = {
-                    "location": row.get("location", "Uploaded Data"),
+                supabase.table("land_data").insert({
+                    "location": row["location"],
                     "soil_moisture": row["soil_moisture"],
                     "vegetation_index": row["vegetation_index"],
                     "temperature": row["temperature"],
                     "latitude": row["latitude"],
                     "longitude": row["longitude"],
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "status": status,
-                    "suggestion": suggestion,
-                }
-                supabase.table("land_data").insert(record).execute()
-            st.success("✅ Uploaded data successfully added!")
+                    "status": row["status"],
+                    "suggestion": row["suggestion"],
+                }).execute()
+            st.sidebar.success("✅ CSV data successfully added!")
+            st.cache_data.clear()
+            df = load_data()
         except Exception as e:
-            st.error(f"Error uploading data: {e}")
+            st.sidebar.error(f"❌ Upload failed: {e}")
 
-else:
-    st.warning("No data available yet.")
+# --- Manual Data Entry Section ---
+st.sidebar.subheader("Or Enter Data Manually")
+with st.sidebar.form("manual_input_form"):
+    soil_moisture = st.number_input("Soil Moisture (%)", min_value=0.0, step=0.1)
+    vegetation_index = st.number_input("Vegetation Index (NDVI)", min_value=0.0, step=0.01)
+    temperature = st.number_input("Temperature (°C)", step=0.1)
+    latitude = st.number_input("Latitude", format="%.6f")
+    longitude = st.number_input("Longitude", format="%.6f")
+    submitted = st.form_submit_button("Add Record")
+
+    if submitted:
+        geolocator = Nominatim(user_agent="terrascope")
+        location_name = "Unknown"
+        try:
+            loc = geolocator.reverse((latitude, longitude), language="en")
+            if loc:
+                location_name = loc.address
+        except:
+            pass
+
+        status = classify_status({
+            "soil_moisture": soil_moisture,
+            "vegetation_index": vegetation_index,
+        })
+        suggestion = generate_suggestion(status)
+
+        try:
+            supabase.table("land_data").insert({
+                "location": location_name,
+                "soil_moisture": soil_moisture,
+                "vegetation_index": vegetation_index,
+                "temperature": temperature,
+                "latitude": latitude,
+                "longitude": longitude,
+                "status": status,
+                "suggestion": suggestion,
+            }).execute()
+            st.sidebar.success("✅ Record added successfully!")
+            st.cache_data.clear()
+            df = load_data()
+        except Exception as e:
+            st.sidebar.error(f"❌ Failed to add record: {e}")
+
+# --- Overview Metrics ---
+st.subheader("📊 Overview Metrics")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Records", len(df))
+col2.metric("Healthy Lands", (df["status"] == "Healthy").sum())
+col3.metric("At Risk", (df["status"] == "At Risk").sum())
+col4.metric("Degraded Lands", (df["status"] == "Degraded").sum())
+
+# --- Map Visualization ---
+st.subheader("🗺️ Land Health Map")
+status_colors = {
+    "Healthy": "green",
+    "At Risk": "orange",
+    "Degraded": "red",
+    "Critical": "purple",
+    "Unknown": "gray",
+}
+
+fig = px.scatter_mapbox(
+    df,
+    lat="latitude",
+    lon="longitude",
+    color="status",
+    color_discrete_map=status_colors,
+    hover_name="location",
+    hover_data={
+        "soil_moisture": True,
+        "vegetation_index": True,
+        "temperature": True,
+        "suggestion": True,
+    },
+    zoom=4,
+    height=600,
+)
+
+fig.update_layout(mapbox_style="carto-positron", legend_title="Land Health Status")
+st.plotly_chart(fig, use_container_width=True)
+
+# --- Data Table ---
+st.subheader("📋 Land Data Table")
+st.dataframe(df)
+
+# --- Download Button ---
+csv = df.to_csv(index=False).encode("utf-8")
+st.download_button("📥 Download Current Data", csv, "land_data.csv", "text/csv")
