@@ -204,3 +204,19 @@ if not df.empty:
         st.warning("Filtered data has no valid coordinates. Try adjusting the status filter.")
 else:
     st.warning("No data available yet. Add or upload some to begin.")
+
+# --- Footer ---
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center;'>
+        <img src="https://app.greenweb.org/api/v3/greencheckimage/terrascope.streamlit.app?nocache=true"
+             alt="This website runs on green hosting - verified by thegreenwebfoundation.org"
+             width="200px" height="95px">
+        <p style='font-size: 14px; color: gray;'>
+            This website runs on green hosting — verified by thegreenwebfoundation.org
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
