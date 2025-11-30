@@ -13,6 +13,10 @@ import branca.colormap as cm
 st.set_page_config(page_title="TerraScope - Land Health Monitor", layout="wide")
 st.title("🌍 TerraScope - Land Health Monitoring Dashboard")
 
+TerraScope is an AI-powered land monitoring dashboard that tracks early signs of land degradation. 
+It analyzes soil moisture, vegetation health, and temperature, and displays the results through 
+real-time charts, alerts, and an interactive map. The tool helps land managers make faster, 
+data-driven decisions by highlighting unhealthy areas and showing how conditions change over time.
 # --------------------------
 # Supabase Setup (Safe)
 # --------------------------
