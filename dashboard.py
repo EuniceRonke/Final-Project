@@ -137,6 +137,14 @@ with st.sidebar.expander("➕ Add New Land Data"):
         submitted = st.form_submit_button("Submit Data")
         if submitted:
             status, suggestion = classify_status({"soil_moisture": soil, "vegetation": vegetation})
+            
+            # Generate unique beacon_id
+            beacon_id = f"BEACON-{int(time.time()*1000)}"
+
+            # Compute sustainability_index and carbon_estimate
+            sustainability_index = (0.5 * soil + 0.5 * vegetation).clip(0, 100) if hasattr((0.5 * soil + 0.5 * vegetation), 'clip') else (0.5 * soil + 0.5 * vegetation)
+            carbon_estimate = vegetation * 1000
+            
             payload = {
                 "location": location,
                 "soil_moisture": soil,
@@ -146,7 +154,10 @@ with st.sidebar.expander("➕ Add New Land Data"):
                 "longitude": lon,
                 "timestamp": datetime.utcnow().isoformat(),
                 "status": status,
-                "suggestion": suggestion
+                "suggestion": suggestion,
+                "beacon_id": beacon_id,
+                "sustainability_index": sustainability_index,
+                "carbon_estimate": carbon_estimate
             }
             try:
                 res = requests.post(POST_ADD_URL, headers=HEADERS, json=payload)
