@@ -50,6 +50,13 @@ def classify_status(row):
 st.set_page_config(page_title="Terrascope Dashboard", layout="wide")
 st.title("🌿 Terrascope Land Health Dashboard")
 
+st.markdown("""
+TerraScope is an AI-powered land monitoring dashboard that tracks early signs of land degradation.
+It analyzes soil moisture, vegetation health, and temperature, and displays the results through 
+real-time charts, alerts, and an interactive map. The tool helps land managers make faster, 
+data-driven decisions by highlighting unhealthy areas and showing how conditions change over time.
+""")
+
 @st.cache_data(ttl=60)
 def fetch_data():
     start = time.time()
